@@ -1,0 +1,10 @@
+[package]
+name = "sparse-repr"
+description = "Converts files containing a graph's edge-list into Compressed Sparse Row (CSR) format."
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ahash = "0.8.12"
+indexmap = "2.12.0"
+indoc = "2.0.7"

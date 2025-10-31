@@ -31,113 +31,6 @@ impl Default for Format {
 }
 
 impl Args {
-    // Might be handle to have a function for this if I add more arguments later
-    pub fn print_usage_short<W: Write>(mut w: W) -> std::io::Result<()> {
-        writeln!(
-            w,
-            "usage: {} <input> [-o <output>] [-f <fmt>] [...OPTIONS] (see -h/--help for other options)",
-            env!("CARGO_PKG_NAME")
-        )?;
-        w.flush()?;
-        Ok(())
-    }
-
-    pub fn print_usage_full<W: Write>(mut w: W) -> std::io::Result<()> {
-        writedoc!(
-            w,
-            r#"""
-                {name} {ver}
-
-                {desc}
-
-                The CSR format used is specifically as described in:
-                [1] T. Kelly, "Programming Workbench: Compressed Sparse Row Format for Representing Graphics," ;login:,
-                    vol. 45, no. 4, pp. 76-82, 2020.
-
-                USAGE:
-                  {name} <input> [-f <fmt>]
-                  {name} <input> [-o <output>] [-f <fmt>]
-                  cat <input> | {name} [-o <output>] [-f <fmt>]
-
-                ARGUMENTS:
-                  <input>   Filepath to read input from. Ignored when input is provided over stdin.
-
-                            Can be set to '-' to read from stdin explicitly in the event that input detection fails.
-
-                OPTIONS:
-                  -h, --help                Display this message and exit.
-
-                  -o, --output=<output>     Filepath to output to.
-
-                                            Output is written to stdout by default. <output> may be set to '-' to write
-                                            to stdout explicitly.
-
-                                            See OUTPUT FORMATS for details on output formatting.
-
-                  -F, --force               Overwrite <output> if it already exists.
-
-                  -f, --format=<fmt>        Which to write output as [default: text].
-
-                                            <fmt> is either 'text' (t/txt/text) or 'binary' (b/bin/binary). See OUTPUT
-                                            FORMATS for details.
-
-                  -u, --undirected          Treats <input> as containing undirected edges rather than directed edges.
-
-                                            In this mode, all edges u→v are encoded in the output as two directed edges
-                                            (u→v and v→u). This is true even if both u→v and v→u appear in the input
-                                            (see '-m/--multiple' flag).
-
-                  -m, --multiple            Allows for the presence of multiple edges between the same two vertices.
-
-                                            When disabled, duplicated edges are simply skipped/ignored.
-
-                                            INTERACTION WITH -u/--undirected:
-                                            Usually, two edges u→v and v→u are two distinct edges. When 'undirected' is
-                                            set, both are treated as the same edge; when 'multiple' and 'undirected' are
-                                            used together, the edge will be counted as appearing twice. This means that
-                                            four edges will be written to output: two from u to v, and two from v to u.
-
-                  -I, --no-preserve-indices
-                                            Re-number output vertices' indices based solely on the order in which they
-                                            appear in <input>.
-
-                                            By default, when all labels in <input> are numeric, their exact values are
-                                            attempted to be preserved (see INPUT FORMAT for details). When this flag is
-                                            set, all attempts to preserve numeric labels' values are disabled.
-
-                  -p, --print-mapping       Print a mapping of how vertex labels were re-numbered to stderr.
-
-                INPUT FORMAT:
-                  The input file should contain multiple lines representing an edge-list of a graph. Each line
-                  represents a single edge (directed by default; see -u/--undirected in OPTIONS). Each line/edge should
-                  be a pair of whitespace- or comma-separated labels.
-
-                  Vertex labels may be any sequence of UTF-8-encoded text, excluding commas or whitespace (since those
-                  are used to separate labels on a line).
-
-                  When all vertex labels in <input> are integers, their values will be attempted to be preserved in the
-                  final output (by default, see -I/--no-preserve--indices). For example, edge 18→209 appearing on the
-                  first line of <input> will be result in F[N[18]] = 209. However, this is only possible if there are no
-                  missing indices in the file: if there are, gaps in the sequence will be filled in based on the numeric
-                  ordering of the non-missing indices.
-
-                OUTPUT FORMATS:
-                  This section documents file structure of the output formats.
-
-                    TEXT FORMAT:
-                      TODO
-
-                    BINARY FORMAT:
-                      TODO
-            """#,
-            name = env!("CARGO_PKG_NAME"),
-            ver = env!("CARGO_PKG_VERSION"),
-            desc = env!("CARGO_PKG_DESCRIPTION"),
-        )?;
-        w.flush()?;
-        Ok(())
-    }
-
     pub fn get() -> Result<Args, ArgError> {
         let mut pos1 = None;
 
@@ -158,13 +51,13 @@ impl Args {
             let mut arg = raw_arg.as_str();
             let mut val = args.peek().map(String::as_str);
 
-            println!("arg: {arg}, val: {val:?}, consumed: {consumed:?}");
-
             // Check for -h/--help before we do *anything* else. If we check for this down in our `match arg` statement,
             // then it is subject to being consumed by previous flags. i.e., `<exe> <input> -f --help` should display
             // the help message instead of erroring on "'--help' is not a valid format".
-            if arg == "-h" || arg == "--help" || val == Some("-h") || val == Some("--help") {
-                return Err(ArgError::DisplayHelp);
+            if arg == "-h" || val == Some("-h") {
+                return Err(ArgError::DisplayHelpShort);
+            } else if arg == "--help" || val == Some("--help") {
+                return Err(ArgError::DisplayHelpLong);
             }
 
             // If this argument has already been consumed by the previous option, skip it.
@@ -298,7 +191,9 @@ impl Args {
 #[derive(Debug)]
 pub enum ArgError {
     /// The '-h' flag was passed; help should be displayed.
-    DisplayHelp,
+    DisplayHelpShort,
+    /// The '--help' flag was passed; help should be displayed.
+    DisplayHelpLong,
     /// An option with an unknown flag was found.
     UnknownOpt(String),
     /// More options than were expected appeared on the command line.
@@ -322,8 +217,9 @@ impl Display for ArgError {
             ArgError::MissingArg(opt) => f.write_fmt(format_args!("Missing required argument for '{opt}'.")),
             ArgError::InvalidArg(opt, got) => f.write_fmt(format_args!("Invalid {opt} value '{got}'.")),
             ArgError::IOError(opt, err) => f.write_fmt(format_args!("Could not open {opt} file: {err}")),
-            // Actual displaying of help message is handled in `main`, this variant is not normally displayed.
-            ArgError::DisplayHelp => f.write_str("Encountered -h/--help in arguments"),
+            // Actual displaying of help messages is handled in `main`, this variant is not normally displayed.
+            ArgError::DisplayHelpShort => f.write_str("Encountered -h in arguments."),
+            ArgError::DisplayHelpLong => f.write_str("Encountered --help in arguments."),
         }
     }
 }
@@ -407,4 +303,151 @@ impl From<StdoutLock<'static>> for Output {
     fn from(value: StdoutLock<'static>) -> Self {
         Self::Stdout(value)
     }
+}
+
+pub fn write_usage<W: Write>(mut w: W) -> std::io::Result<()> {
+    writeln!(
+        w,
+        "usage: {} <input> [-o <output>] [-f <fmt>] [...OPTIONS] (see -h/--help for other options)",
+        env!("CARGO_PKG_NAME")
+    )?;
+    w.flush()?;
+    Ok(())
+}
+
+pub fn write_help_short<W: Write>(mut w: W) -> std::io::Result<()> {
+    writedoc!(
+        w,
+        r#"
+            {name} {ver}
+
+            {desc}
+
+            USAGE:
+                {name} <input> [-f <fmt>]
+                {name} <input> [-o <output>] [-f <fmt>]
+                cat <input> | {name} [-o <output>] [-f <fmt>]
+
+            ARGUMENTS:
+                <input>                    Filepath to read input from [default: stdin].
+
+            OPTIONS:
+                -h                         Display this message and exit.
+                --help                     Display a longer-form help message and exit.
+                -o, --output=<output>      Filepath to write output to [default: stdout].
+                -F, --force                Overwrite <output> if it already exists.
+                -f, --format=<fmt>         Which to write output as [default: text].
+                -u, --undirected           Treats <input> as containing undirected edges rather than directed edges.
+                -m, --multiple             Allows for the presence of multiple edges between the same two vertices.
+                -I, --no-preserve-indices  Re-number output vertices' indices based solely on the order in which they
+                                           appear in <input>.
+                -p, --print-mapping        Print a mapping of how vertex labels were re-numbered to stderr.
+        "#,
+        name = env!("CARGO_PKG_NAME"),
+        ver = env!("CARGO_PKG_VERSION"),
+        desc = env!("CARGO_PKG_DESCRIPTION"),
+    )?;
+    w.flush()?;
+    Ok(())
+}
+
+pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
+    writedoc!(
+        w,
+        r#"
+            {name} {ver}
+
+            {desc}
+
+            The CSR format used is specifically as described in:
+            [1] T. Kelly, "Programming Workbench: Compressed Sparse Row Format for Representing Graphics," ;login:,
+                vol. 45, no. 4, pp. 76-82, 2020.
+
+            USAGE:
+                {name} <input> [-f <fmt>]
+                {name} <input> [-o <output>] [-f <fmt>]
+                cat <input> | {name} [-o <output>] [-f <fmt>]
+
+            ARGUMENTS:
+                <input>                    Filepath to read input from [default: stdin].
+
+                                           Input is read from stdin by default. This argument can be set to '-' to
+                                           explicitly read from stdin.
+
+                                           See the INPUT FORMAT section for details on expected format.
+
+            OPTIONS:
+                -h                         Display a shorter-form help message and exit.
+
+                --help                     Display this message and exit.
+
+                -o, --output=<output>      Filepath to write output to [default: stdout].
+
+                                           Output is written to stdout by default. This argument can be set to '-' to
+                                           explicitly write to stdout.
+
+                                           See the OUTPUT FORMAT section for details about what the output will be.
+
+                -F, --force                Overwrite <output> if it already exists.
+
+                -f, --format=<fmt>         Which to write output as [default: text].
+
+                                           <fmt> is either 'text' (t/txt/text) or 'binary' (b/bin/binary). See OUTPUT
+                                           FORMATS for details.
+
+                -u, --undirected           Treats <input> as containing undirected edges rather than directed edges.
+
+                                           In this mode, all edges u→v are encoded in the output as two directed edges
+                                           (u→v and v→u). This is true even if both u→v and v→u appear in the input
+                                           (see '-m/--multiple' flag).
+
+                -m, --multiple             Allows for the presence of multiple edges between the same two vertices.
+
+                                           When disabled, duplicated edges are simply skipped/ignored.
+
+                                           INTERACTION WITH -u/--undirected:
+                                           Usually, two edges u→v and v→u are two distinct edges. When 'undirected' is
+                                           set, both are treated as the same edge; when 'multiple' and 'undirected'
+                                           are used together, the edge will be counted as appearing twice. This means
+                                           that four edges will be written to output: two from u to v, and two from v
+                                           to u.
+
+                -I, --no-preserve-indices  Re-number output vertices' indices based solely on the order in which they
+                                           appear in <input>.
+
+                                           By default, when all labels in <input> are numeric, their exact values are
+                                           attempted to be preserved (see INPUT FORMAT for details). When this flag is
+                                           set, all attempts to preserve numeric labels' values are disabled.
+
+                -p, --print-mapping        Print a mapping of how vertex labels were re-numbered to stderr.
+
+            INPUT FORMAT:
+                The input file should contain multiple lines representing an edge-list of a graph. Each line
+                represents a single edge (directed by default; see -u/--undirected in OPTIONS). Each line/edge should
+                be a pair of whitespace- or comma-separated labels.
+
+                Vertex labels may be any sequence of UTF-8-encoded text, excluding commas or whitespace (since those
+                are used to separate labels on a line).
+
+                When all vertex labels in <input> are integers, their values will be attempted to be preserved in the
+                final output (by default, see -I/--no-preserve--indices). For example, edge 18→209 appearing on the
+                first line of <input> will be result in F[N[18]] = 209. However, this is only possible if there are no
+                missing indices in the file: if there are, gaps in the sequence will be filled in based on the numeric
+                ordering of the non-missing indices.
+
+            OUTPUT FORMATS:
+                This section documents file structure of the output formats.
+
+                TEXT FORMAT:
+                    TODO
+
+                BINARY FORMAT:
+                    TODO
+        "#,
+        name = env!("CARGO_PKG_NAME"),
+        ver = env!("CARGO_PKG_VERSION"),
+        desc = env!("CARGO_PKG_DESCRIPTION"),
+    )?;
+    w.flush()?;
+    Ok(())
 }

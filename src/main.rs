@@ -1,10 +1,10 @@
-mod args;
+mod cli;
 
 use std::error::Error;
 use std::io;
 use std::process::ExitCode;
 
-use crate::args::{ArgError, Args};
+use crate::cli::{ArgError, Args};
 
 fn main() -> ExitCode {
     match run() {
@@ -18,14 +18,18 @@ fn main() -> ExitCode {
                     ExitCode::FAILURE
                 },
                 // If they were asking for help, print help and return success
-                Some(ArgError::DisplayHelp) => {
-                    Args::print_usage_full(io::stdout()).expect("failed to print help message to stdout");
+                Some(ArgError::DisplayHelpShort) => {
+                    cli::write_help_short(io::stdout()).expect("failed to print help message to stdout");
+                    ExitCode::SUCCESS
+                },
+                Some(ArgError::DisplayHelpLong) => {
+                    cli::write_help_long(io::stdout()).expect("failed to print help message to stdout");
                     ExitCode::SUCCESS
                 },
                 // Otherwise, print both the error and the usage string
-                Some(_) => {
+                Some(_arg_error) => {
                     eprintln!("error: {err}");
-                    Args::print_usage_short(io::stderr()).expect("failed to print help message to stderr");
+                    cli::write_usage(io::stderr()).expect("failed to print help message to stderr");
                     ExitCode::FAILURE
                 },
             }

@@ -1,7 +1,58 @@
+use std::fmt::Display;
+
 use indexmap::map::Entry;
 use rayon::prelude::*;
 
 type IndexMap<K, V> = indexmap::IndexMap<K, V, ahash::RandomState>;
+
+/// Interface for creating a new [Graph].
+#[derive(Debug)]
+pub struct GraphBuilder {
+    // The option in the CLI is for "undirected", since the default is "directed," but it feels weird to have the bool
+    // be for "undirected or not."
+    directed: bool,
+    multiple: bool,
+    include_zero: bool,
+}
+
+// A builder is nice because it is more library-friendly if we ever want to make this stuff usable from C++ over FFI.
+impl GraphBuilder {
+    pub fn new() -> Self {
+        Self {
+            directed: true,
+            multiple: false,
+            include_zero: true,
+        }
+    }
+
+    /// Controls whether or not the resulting graph tracks directed edges or not. The default is `true`.
+    pub fn directed(self, yes: bool) -> Self {
+        Self { directed: yes, ..self }
+    }
+
+    /// Controls whether or not the resulting graph will track multiple copies of the same edge, or if it should ignore
+    /// them. The default is `false`.
+    pub fn multiple(self, yes: bool) -> Self {
+        Self { multiple: yes, ..self }
+    }
+
+    /// Controls whether or not the resulting graph should output a final vertex array with an empty (zero) spot at the
+    /// beginning. This causes vertices to be renumbered to one-indexed. The default is `true`.
+    pub fn include_zero(self, yes: bool) -> Self {
+        Self { include_zero: yes, ..self }
+    }
+
+    /// Create a graph from this builder.
+    pub fn build<'a>(&self) -> Graph<'a> {
+        Graph {
+            map: Default::default(),
+            degree_sum: 0,
+            directed: self.directed,
+            multiple: self.multiple,
+            include_zero: self.include_zero,
+        }
+    }
+}
 
 /// A graph.
 ///
@@ -15,22 +66,15 @@ pub struct Graph<'a> {
     map: IndexMap<Vertex<'a>, IndexMap<Vertex<'a>, usize>>,
     /// The total number of all edges in this edge-set.
     degree_sum: usize,
-    /// Whether or not this graph should account for directions or not.
-    undirected: bool,
+    /// Whether this graph should account for directions or not.
+    directed: bool,
     /// Whether or not this graph should allow multiple edges or not.
     multiple: bool,
+    /// Whether or not this graph should emit an empty spot at the front of the `N` array in its output.
+    include_zero: bool,
 }
 
 impl<'a> Graph<'a> {
-    pub fn new(undirected: bool, multiple: bool) -> Self {
-        Self {
-            map: Default::default(),
-            degree_sum: 0,
-            undirected,
-            multiple,
-        }
-    }
-
     /// Gets the *order* of this graph, or the number of vertices it contains.
     pub fn num_verts(&self) -> usize {
         self.map.len()
@@ -49,7 +93,7 @@ impl<'a> Graph<'a> {
     /// Add a single edge to this edge-set (graph).
     pub fn add_edge(&mut self, v1: Vertex<'a>, v2: Vertex<'a>) {
         self.insert_single_edge(v1, v2);
-        if self.undirected {
+        if !self.directed {
             self.insert_single_edge(v2, v1);
         }
     }
@@ -91,12 +135,14 @@ impl<'a> Graph<'a> {
     where
         U: Sized + TryFrom<usize>, */
 
-    pub fn generate_csr(&self, skip_zero: bool) -> (Box<[usize]>, Box<[usize]>) {
+    pub fn generate_csr(&self) -> (Box<[usize]>, Box<[usize]>) {
+        let has_zero = self.include_zero;
+
         // (N and F are the variable names used in the source paper)
-        let mut n = Vec::<usize>::with_capacity(self.num_verts() + (!skip_zero as usize));
+        let mut n = Vec::<usize>::with_capacity(self.num_verts() + (has_zero as usize));
         let mut f = Vec::<usize>::with_capacity(self.num_edges());
 
-        if !skip_zero {
+        if has_zero {
             n.push(0);
         }
 
@@ -117,12 +163,12 @@ impl<'a> Graph<'a> {
         // Now that we've populated N, We can figure out each vertex's range in F by indexing into N.
 
         // For every vertex, its allocated region in F is given by `N[i+1]..N[i+2]` or `N[i]..N[i+1]` (exclusive)
-        // depending on the `skip_zero` flag, where `i` is that vertex's index in *our* map. Because `N` increases
+        // depending on the `has_zero` flag, where `i` is that vertex's index in *our* map. Because `N` increases
         // monotonically, these regions of `F` will not overlap.
 
         (0..self.num_verts()).into_par_iter().for_each(|i| {
             // Find the region of F we want to index:
-            let ni = i + (!skip_zero as usize);
+            let ni = i + (has_zero as usize);
             let f1 = n[ni];
             let f2 = n.get(ni + 1).copied().unwrap_or(self.num_edges());
 
@@ -148,7 +194,7 @@ impl<'a> Graph<'a> {
             let mut j = 0;
             for (dest, &count) in edges {
                 let index = self.map.get_index_of(dest).unwrap();
-                slice[j..j + count].fill(index + (!skip_zero as usize));
+                slice[j..j + count].fill(index + (has_zero as usize));
                 j += count;
             }
         });
@@ -181,6 +227,12 @@ impl<'a> Graph<'a> {
     pub fn generate_csr_usize(&self) -> (Vec<usize>, Vec<usize>) {
         self.generate_csr::<usize>().unwrap()
     } */
+
+    /// Returns an iterator that yields the original vertex and its final index in the outputted CSR array(s).
+    pub fn mappings(&self) -> impl Iterator<Item = (Vertex<'a>, usize)> {
+        let o = self.include_zero as usize;
+        self.map.keys().enumerate().map(move |(i, v)| (*v, i + o))
+    }
 }
 
 /// A value which is either a string or a parsed number.
@@ -202,11 +254,20 @@ impl<'a> Vertex<'a> {
     }
 }
 
+impl<'a> Display for Vertex<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            VertexType::Label(str) => <&str as Display>::fmt(&str, f),
+            VertexType::Number(n) => <usize as Display>::fmt(&n, f),
+        }
+    }
+}
+
 impl<'a> PartialEq<str> for Vertex<'a> {
     fn eq(&self, other: &str) -> bool {
-        match &self.0 {
-            VertexType::Label(str) => *str == other,
-            VertexType::Number(n) => other.parse::<usize>().is_ok_and(|x| x == *n),
+        match self.0 {
+            VertexType::Label(str) => str == other,
+            VertexType::Number(n) => other.parse::<usize>().is_ok_and(|x| x == n),
         }
     }
 }

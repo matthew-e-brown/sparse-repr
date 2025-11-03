@@ -5,8 +5,8 @@ use std::error::Error;
 use std::io::{self, Read};
 use std::process::ExitCode;
 
-use crate::cli::{ArgError, Args};
-use crate::graph::{Graph, Vertex};
+use self::cli::{ArgError, Args};
+use self::graph::{GraphBuilder, Vertex};
 
 fn main() -> ExitCode {
     match run() {
@@ -56,7 +56,11 @@ fn run() -> Result<(), Box<dyn Error>> {
         buf
     };
 
-    let mut graph = Graph::new(args.undirected, args.multiple);
+    let mut graph = GraphBuilder::new()
+        .directed(!args.undirected)
+        .multiple(args.multiple)
+        .include_zero(!args.no_empty)
+        .build();
 
     for line in input.lines() {
         if line.trim().len() == 0 {
@@ -83,7 +87,14 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     eprintln!("Found {} total edges between {} vertices", graph.num_edges(), graph.num_verts());
 
-    let (n, f) = graph.generate_csr(args.no_empty);
+    if args.print_mapping {
+        eprintln!("MAPPINGS:");
+        for (vertex, index) in graph.mappings() {
+            eprintln!("  {vertex} -> {index}");
+        }
+    }
+
+    let (n, f) = graph.generate_csr();
     println!("N: {n:?}");
     println!("F: {f:?}");
     Ok(())

@@ -1,6 +1,8 @@
+use std::error::Error;
 use std::fmt::Display;
 
 use indexmap::map::Entry;
+use num_traits::{PrimInt, Unsigned};
 use rayon::prelude::*;
 
 type IndexMap<K, V> = indexmap::IndexMap<K, V, ahash::RandomState>;
@@ -131,26 +133,27 @@ impl<'a> Graph<'a> {
         self.map.par_iter_mut().for_each(|(_vertex, edges)| edges.sort_unstable_keys());
     }
 
-    /* pub fn generate_csr<U>(&self) -> Result<(Vec<U>, Vec<U>), U::Error>
-    where
-        U: Sized + TryFrom<usize>, */
-
-    pub fn generate_csr(&self) -> (Box<[usize]>, Box<[usize]>) {
+    pub fn generate_csr<U: Unsigned + PrimInt + Sync>(&self) -> Result<(Box<[U]>, Box<[U]>), OverflowError> {
         let has_zero = self.include_zero;
 
+        // Used for error reporting:
+        let max_index = usize::max(self.num_verts(), self.num_edges());
+        let uint_size = U::zero().count_zeros();
+        let overflow = OverflowError(max_index, uint_size);
+
         // (N and F are the variable names used in the source paper)
-        let mut n = Vec::<usize>::with_capacity(self.num_verts() + (has_zero as usize));
-        let mut f = Vec::<usize>::with_capacity(self.num_edges());
+        let mut n = Vec::<U>::with_capacity(self.num_verts() + (has_zero as usize));
+        let mut f = Vec::<U>::with_capacity(self.num_edges());
 
         if has_zero {
-            n.push(0);
+            n.push(U::zero());
         }
 
         // Assuming the vertices have been sorted (or left unsorted intentionally), the order they appear in the map is
         // the order we want to put them into N. We just need to count the out-degree as we go.
         let mut i = 0;
         for v_outs in self.map.values() {
-            n.push(i);
+            n.push(U::from(i).ok_or(overflow)?);
             i += v_outs.values().sum::<usize>(); // Add the total edge-count for this vertex to `i`
         }
 
@@ -166,38 +169,46 @@ impl<'a> Graph<'a> {
         // depending on the `has_zero` flag, where `i` is that vertex's index in *our* map. Because `N` increases
         // monotonically, these regions of `F` will not overlap.
 
-        (0..self.num_verts()).into_par_iter().for_each(|i| {
-            // Find the region of F we want to index:
-            let ni = i + (has_zero as usize);
-            let f1 = n[ni];
-            let f2 = n.get(ni + 1).copied().unwrap_or(self.num_edges());
+        (0..self.num_verts())
+            .into_par_iter()
+            .try_for_each(|i| -> Result<(), OverflowError> {
+                // Find the region of F we want to index:
+                let ni = i + (has_zero as usize);
+                let f1 = n[ni].to_usize().unwrap();
+                let f2 = match n.get(ni + 1) {
+                    Some(&x) => x.to_usize().unwrap(),
+                    None => self.num_edges(),
+                };
 
-            // Double check our assumptions and create a slice:
-            debug_assert!(f1 <= self.num_edges(), "indices in N should fit within F");
-            debug_assert!(f2 <= self.num_edges(), "indices in N should fit within F");
+                // Double check our assumptions and create a slice:
+                debug_assert!(f1 <= self.num_edges(), "indices in N should fit within F");
+                debug_assert!(f2 <= self.num_edges(), "indices in N should fit within F");
 
-            // SAFETY:
-            // - The length of F is the degree-sum of the graph, and N is a cumulative sum of vertex degrees up to that
-            //   amount. Therefore all values of N are less than the length of F, so `f1` is within the bounds of `f`
-            //   and `f_ptr.add(f1)` is within allocation bounds.
-            // - `f1` and `f2` are both in bounds, so `f2 - f1` cannot be longer than the length of the slice.
-            // - The i'th region of F we are accessing starts at `f1` and ends at `f2`; the i+1'th region will start at
-            //   `f2`. Since N is monotonically increasing, either `f1 == f2` or `f1 < f2`. If `f1 < f2`, there is no
-            //   overlap; if `f1 == f2`, then there is "overlap", but this region has size zero, and so no writes will
-            //   be performed, and no reference/slice aliasing will occur.
-            let f_ptr = f.as_ptr().cast_mut();
-            let slice = unsafe { std::slice::from_raw_parts_mut(f_ptr.add(f1), f2 - f1) };
+                // SAFETY:
+                // - The length of F is the degree-sum of the graph, and N is a cumulative sum of vertex degrees up to
+                //   that amount. Therefore all values of N are less than the length of F, so `f1` is within the bounds
+                //   of `f` and `f_ptr.add(f1)` is within allocation bounds.
+                // - `f1` and `f2` are both in bounds, so `f2 - f1` cannot be longer than the length of the slice.
+                // - The i'th region of F we are accessing starts at `f1` and ends at `f2`; the i+1'th region will start
+                //   at `f2`. Since N is monotonically increasing, either `f1 == f2` or `f1 < f2`. If `f1 < f2`, there
+                //   is no overlap; if `f1 == f2`, then there is "overlap", but this region has size zero, and so no
+                //   writes will be performed, and no reference/slice aliasing will occur.
+                let f_ptr = f.as_ptr().cast_mut();
+                let slice = unsafe { std::slice::from_raw_parts_mut(f_ptr.add(f1), f2 - f1) };
 
-            // Loop through the outbound edges of the i'th vertex, find their destinations' indices, and write them to
-            // our subslice of F:
-            let edges = &self.map[i];
-            let mut j = 0;
-            for (dest, &count) in edges {
-                let index = self.map.get_index_of(dest).unwrap();
-                slice[j..j + count].fill(index + (has_zero as usize));
-                j += count;
-            }
-        });
+                // Loop through the outbound edges of the i'th vertex, find their destinations' indices, and write them
+                // to our subslice of F:
+                let edges = &self.map[i];
+                let mut j = 0;
+                for (dest, &count) in edges {
+                    let index = self.map.get_index_of(dest).unwrap();
+                    let index = U::from(index + (has_zero as usize)).ok_or(overflow)?;
+                    slice[j..j + count].fill(index);
+                    j += count;
+                }
+
+                Ok(())
+            })?;
 
         // SAFETY: After the `par_iter` returns, each iteration will have written a total number of edges into F equal
         // to the sum of each vertex's out-degree. This is is the same length that was used to initialize F's capacity.
@@ -205,28 +216,8 @@ impl<'a> Graph<'a> {
             f.set_len(self.num_edges());
         }
 
-        (n.into_boxed_slice(), f.into_boxed_slice())
+        Ok((n.into_boxed_slice(), f.into_boxed_slice()))
     }
-
-    /* pub fn generate_csr_u8(&self) -> Result<(Vec<u8>, Vec<u8>), TryFromIntError> {
-        self.generate_csr::<u8>()
-    }
-
-    pub fn generate_csr_u16(&self) -> Result<(Vec<u16>, Vec<u16>), TryFromIntError> {
-        self.generate_csr::<u16>()
-    }
-
-    pub fn generate_csr_u32(&self) -> Result<(Vec<u32>, Vec<u32>), TryFromIntError> {
-        self.generate_csr::<u32>()
-    }
-
-    pub fn generate_csr_u64(&self) -> Result<(Vec<u64>, Vec<u64>), TryFromIntError> {
-        self.generate_csr::<u64>()
-    }
-
-    pub fn generate_csr_usize(&self) -> (Vec<usize>, Vec<usize>) {
-        self.generate_csr::<usize>().unwrap()
-    } */
 
     /// Returns an iterator that yields the original vertex and its final index in the outputted CSR array(s).
     pub fn mappings(&self) -> impl Iterator<Item = (Vertex<'a>, usize)> {
@@ -303,3 +294,15 @@ impl<'a> PartialOrd for Vertex<'a> {
         Some(self.cmp(other))
     }
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OverflowError(usize, u32);
+
+impl Display for OverflowError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let Self(v, w) = *self;
+        f.write_fmt(format_args!("Vertex index too large for target integer size (tried to fit '{v}' in {w} bits)"))
+    }
+}
+
+impl Error for OverflowError {}

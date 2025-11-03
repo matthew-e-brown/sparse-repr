@@ -11,6 +11,8 @@ pub struct Args {
     pub input: Input,
     pub output: Output,
     pub fmt: Format,
+    pub bits: BitWidth,
+    pub endian: Endianness,
     pub delimiter: Option<String>,
     pub undirected: bool,
     pub multiple: bool,
@@ -26,10 +28,19 @@ pub enum Format {
     Binary,
 }
 
-impl Default for Format {
-    fn default() -> Self {
-        Format::Text
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(non_camel_case_types)]
+pub enum BitWidth {
+    u8,
+    u16,
+    u32,
+    u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Endianness {
+    Little,
+    Big,
 }
 
 impl Args {
@@ -40,6 +51,8 @@ impl Args {
         let mut output = None;
         let mut force = None;
         let mut fmt = None;
+        let mut bits = None;
+        let mut endian = None;
         let mut delimiter = None;
         let mut undirected = None;
         let mut multiple = None;
@@ -130,6 +143,21 @@ impl Args {
                         Some(other) => return Err(ArgError::InvalidArg("<fmt>", other.to_string())),
                         None => return Err(ArgError::MissingArg("<fmt>")),
                     },
+                    "-b" | "--bits" => match val {
+                        Some("8") => set_option!(arg.to_string(), bits, [take] BitWidth::u8),
+                        Some("16") => set_option!(arg.to_string(), bits, [take] BitWidth::u16),
+                        Some("32") => set_option!(arg.to_string(), bits, [take] BitWidth::u32),
+                        Some("64") => set_option!(arg.to_string(), bits, [take] BitWidth::u64),
+                        Some(other) => return Err(ArgError::InvalidArg("<width>", other.to_string())),
+                        None => return Err(ArgError::MissingArg("<width>")),
+                    },
+                    // -E, --endian=<endianness>  Specify the indianness to use for binary output [default: {endian}].
+                    "-E" | "--endian" => match val {
+                        Some("big" | "b" | "B") => set_option!(arg.to_string(), endian, [take] Endianness::Big),
+                        Some("little" | "l" | "L") => set_option!(arg.to_string(), endian, [take] Endianness::Little),
+                        Some(other) => return Err(ArgError::InvalidArg("<endianness>", other.to_string())),
+                        None => return Err(ArgError::MissingArg("<endianness>")),
+                    },
                     "-d" | "--delimiter" => match val {
                         Some(value) => set_option!(arg.to_string(), delimiter, [take] value.to_string()),
                         None => return Err(ArgError::MissingArg("<delim>")),
@@ -189,6 +217,8 @@ impl Args {
             output,
             fmt,
             delimiter,
+            bits: bits.unwrap_or(default::BIT_WIDTH),
+            endian: endian.unwrap_or(default::ENDIANNESS),
             undirected: undirected.unwrap_or(false),
             multiple: multiple.unwrap_or(false),
             no_preserve_indices: no_preserve_indices.unwrap_or(false),
@@ -241,9 +271,9 @@ impl Display for ArgError {
             ArgError::DisplayHelpShort => f.write_str("Encountered -h in arguments."),
             ArgError::DisplayHelpLong => f.write_str("Encountered --help in arguments."),
             ArgError::ImplicitBinaryToStdout => f.write_str(
-                "Detected terminal <output> with binary format selected. \
+                "Detected terminal on stdout with binary format selected. \
                 Are you sure you want to write raw bytes to the terminal? \
-                Set <output> to '-' to write to stdout explicitly.",
+                Set -o/--output to '-' to write to stdout explicitly.",
             ),
         }
     }
@@ -330,12 +360,36 @@ impl From<StdoutLock<'static>> for Output {
     }
 }
 
+
+const NAME: &str = env!("CARGO_PKG_NAME");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const DESCRIPTION: &str = env!("CARGO_PKG_DESCRIPTION");
+
+#[rustfmt::skip]
+mod target {
+    #[cfg(target_endian = "big")] pub const ENDIANNESS: &str = "big";
+    #[cfg(target_endian = "little")] pub const ENDIANNESS: &str = "little";
+
+    #[cfg(target_pointer_width = "16")] pub const BIT_WIDTH: &str = "16";
+    #[cfg(target_pointer_width = "32")] pub const BIT_WIDTH: &str = "32";
+    #[cfg(target_pointer_width = "64")] pub const BIT_WIDTH: &str = "64";
+}
+
+#[rustfmt::skip]
+mod default {
+    use super::{Endianness, BitWidth};
+
+    #[cfg(target_endian = "big")] pub const ENDIANNESS: Endianness = Endianness::Big;
+    #[cfg(target_endian = "little")] pub const ENDIANNESS: Endianness = Endianness::Little;
+
+    #[cfg(target_pointer_width = "16")] pub const BIT_WIDTH: BitWidth = BitWidth::u16;
+    #[cfg(target_pointer_width = "32")] pub const BIT_WIDTH: BitWidth = BitWidth::u32;
+    #[cfg(target_pointer_width = "64")] pub const BIT_WIDTH: BitWidth = BitWidth::u64;
+}
+
+
 pub fn write_usage<W: Write>(mut w: W) -> std::io::Result<()> {
-    writeln!(
-        w,
-        "usage: {} <input> [-o <output>] [-f <fmt>] [...OPTIONS] (see -h/--help for other options)",
-        env!("CARGO_PKG_NAME")
-    )?;
+    writeln!(w, "usage: {NAME} <input> [-o <output>] [-f <fmt>] [...OPTIONS] (see -h/--help for other options)")?;
     w.flush()?;
     Ok(())
 }
@@ -344,14 +398,14 @@ pub fn write_help_short<W: Write>(mut w: W) -> std::io::Result<()> {
     writedoc!(
         w,
         r#"
-            {name} {ver}
+            {NAME} {VERSION}
 
-            {desc}
+            {DESCRIPTION}
 
             USAGE:
-                {name} <input> [-f <fmt>]
-                {name} <input> [-o <output>] [-f <fmt>]
-                cat <input> | {name} [-o <output>] [-f <fmt>]
+                {NAME} <input> [-f <fmt>]
+                {NAME} <input> [-o <output>] [-f <fmt>]
+                cat <input> | {NAME} [-o <output>] [-f <fmt>]
 
             ARGUMENTS:
                 <input>                    Filepath to read input from [default: stdin].
@@ -363,6 +417,8 @@ pub fn write_help_short<W: Write>(mut w: W) -> std::io::Result<()> {
                 -d, --delimiter=<delim>    String used to separate vertex labels in <input> [default: whitespace].
                 -F, --force                Overwrite <output> if it already exists.
                 -f, --format=<fmt>         Which to write output as [default: text].
+                -b, --bits=<width>         Specify the size of integer used in binary output, in bits [default: {width}].
+                -E, --endian=<endianness>  Specify the indianness to use for binary output [default: {endian}].
                 -u, --undirected           Treats <input> as containing undirected edges rather than directed edges.
                 -m, --multiple             Allows for the presence of multiple edges between the same two vertices.
                 -I, --no-preserve-indices  Re-number output vertices' indices based solely on the order in which they
@@ -370,9 +426,8 @@ pub fn write_help_short<W: Write>(mut w: W) -> std::io::Result<()> {
                 -Z, --no-empty             Exclude the initial empty entry from the CSR format.
                 -p, --print-mapping        Print a mapping of how vertex labels were re-numbered to stderr.
         "#,
-        name = env!("CARGO_PKG_NAME"),
-        ver = env!("CARGO_PKG_VERSION"),
-        desc = env!("CARGO_PKG_DESCRIPTION"),
+        endian = target::ENDIANNESS,
+        width = target::BIT_WIDTH,
     )?;
     w.flush()?;
     Ok(())
@@ -382,9 +437,9 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
     writedoc!(
         w,
         r#"
-            {name} {ver}
+            {NAME} {VERSION}
 
-            {desc}
+            {DESCRIPTION}
 
             The CSR format used is specifically as described in:
             [1] T. Kelly, "Programming Workbench: Compressed Sparse Row Format for Representing Graphics," ;login:,
@@ -392,9 +447,9 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
                 https://www.usenix.org/system/files/login/articles/login_winter20_16_kelly.pdf
 
             USAGE:
-                {name} <input> [-f <fmt>]
-                {name} <input> [-o <output>] [-f <fmt>]
-                cat <input> | {name} [-o <output>] [-f <fmt>]
+                {NAME} <input> [-f <fmt>]
+                {NAME} <input> [-o <output>] [-f <fmt>]
+                cat <input> | {NAME} [-o <output>] [-f <fmt>]
 
             ARGUMENTS:
                 <input>                    Filepath to read input from [default: stdin].
@@ -425,8 +480,24 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
 
                 -f, --format=<fmt>         Which to write output as [default: text].
 
-                                           <fmt> is either 'text' (t/txt/text) or 'binary' (b/bin/binary). See OUTPUT
-                                           FORMATS for details.
+                                           <fmt> is either 'text'/'txt'/'t' or 'binary'/'bin'/'b'. See OUTPUT FORMATS
+                                           for details on what exactly is output.
+
+                -b, --bits=<width>         Specify the size of integer used in binary output, in bits [default: {width}].
+
+                                           <width> is one of '8', '16', '32', or '64'. The default, {width}, is the
+                                           native pointer-width (size_t) for this platform. Note that the array lengths
+                                           output at the start of each array in binary format will always be {width}
+                                           bits, regardless of what <width> is set to.
+
+                                           Does nothing when <fmt> is 'text'.
+
+                -E, --endian=<endianness>  Specify the indianness to use for binary output [default: {endian}].
+
+                                           <endianness> is either 'big'/'b'/'B' or 'little'/'l'/'L'. The default,
+                                           '{endian}', is the native endianness for this platform.
+
+                                           Does nothing when <fmt> is 'text'.
 
                 -u, --undirected           Treats <input> as containing undirected edges rather than directed edges.
 
@@ -493,9 +564,8 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
               BINARY FORMAT:
                 TODO
         "#,
-        name = env!("CARGO_PKG_NAME"),
-        ver = env!("CARGO_PKG_VERSION"),
-        desc = env!("CARGO_PKG_DESCRIPTION"),
+        endian = target::ENDIANNESS,
+        width = target::BIT_WIDTH,
     )?;
     w.flush()?;
     Ok(())

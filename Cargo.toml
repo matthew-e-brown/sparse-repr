@@ -8,4 +8,5 @@ edition = "2024"
 ahash = "0.8.12"
 indexmap = { version = "2.12.0", features = ["rayon"] }
 indoc = "2.0.7"
+num-traits = "0.2.19"
 rayon = "1.11.0"

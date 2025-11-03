@@ -2,11 +2,14 @@ mod cli;
 mod graph;
 
 use std::error::Error;
-use std::io::{self, Read};
+use std::fmt::Display;
+use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
-use self::cli::{ArgError, Args};
-use self::graph::{GraphBuilder, Vertex};
+use num_traits::{PrimInt, ToBytes, Unsigned};
+
+use self::cli::{ArgError, Args, BitWidth, Endianness, Format};
+use self::graph::{Graph, GraphBuilder, Vertex};
 
 fn main() -> ExitCode {
     match run() {
@@ -30,8 +33,8 @@ fn main() -> ExitCode {
                 },
                 // Otherwise, print both the error and the usage string
                 Some(_arg_err) => {
+                    eprintln!("error: {err}\n");
                     cli::write_usage(io::stderr()).expect("failed to print help message to stderr");
-                    eprintln!("\nerror: {err}");
                     ExitCode::FAILURE
                 },
             }
@@ -95,7 +98,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         graph.sort_vertices();
     }
 
-    eprintln!("Found {} total edges between {} vertices", graph.num_edges(), graph.num_verts());
+    /* eprintln!("Found {} total edges between {} vertices", graph.num_edges(), graph.num_verts()); */
 
     if args.print_mapping {
         eprintln!("MAPPINGS:");
@@ -104,8 +107,73 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let (n, f) = graph.generate_csr();
-    println!("N: {n:?}");
-    println!("F: {f:?}");
+    match (args.bits, args.fmt) {
+        (BitWidth::u8, Format::Text) => write_text::<u8>(&graph, args.output)?,
+        (BitWidth::u16, Format::Text) => write_text::<u16>(&graph, args.output)?,
+        (BitWidth::u32, Format::Text) => write_text::<u32>(&graph, args.output)?,
+        (BitWidth::u64, Format::Text) => write_text::<u64>(&graph, args.output)?,
+        (BitWidth::u8, Format::Binary) => write_binary::<u8>(&graph, args.output, args.endian)?,
+        (BitWidth::u16, Format::Binary) => write_binary::<u16>(&graph, args.output, args.endian)?,
+        (BitWidth::u32, Format::Binary) => write_binary::<u32>(&graph, args.output, args.endian)?,
+        (BitWidth::u64, Format::Binary) => write_binary::<u64>(&graph, args.output, args.endian)?,
+    }
+
+    Ok(())
+}
+
+fn write_binary<U: Unsigned + PrimInt + Sync + ToBytes>(
+    graph: &Graph,
+    mut output: impl Write,
+    endian: Endianness,
+) -> Result<(), Box<dyn Error>> {
+    type ToBytesFn<U> = fn(&U) -> <U as ToBytes>::Bytes;
+
+    let (n, f) = graph.generate_csr::<U>()?;
+
+    let (n_len, f_len, to_bytes): ([u8; _], [u8; _], ToBytesFn<U>) = match endian {
+        Endianness::Little => (n.len().to_le_bytes(), f.len().to_le_bytes(), U::to_le_bytes),
+        Endianness::Big => (n.len().to_be_bytes(), f.len().to_be_bytes(), U::to_be_bytes),
+    };
+
+    output.write_all(&n_len)?;
+    output.write_all(&f_len)?;
+
+    for x in n {
+        output.write_all(to_bytes(&x).as_ref())?;
+    }
+
+    for x in f {
+        output.write_all(to_bytes(&x).as_ref())?;
+    }
+
+    Ok(())
+}
+
+fn write_text<U: Unsigned + PrimInt + Sync + Display>(
+    graph: &Graph,
+    mut output: impl Write,
+) -> Result<(), Box<dyn Error>> {
+    let (n, f) = graph.generate_csr::<U>()?;
+
+    let nl = n.len();
+    let fl = f.len();
+
+    writeln!(output, "{} {}", n.len(), f.len())?;
+
+    if nl > 0 {
+        for &x in &n[..nl - 1] {
+            write!(output, "{} ", x)?;
+        }
+        writeln!(output, "{}", n[nl - 1])?;
+    }
+
+    if fl > 0 {
+        for &x in &f[..fl - 1] {
+            write!(output, "{} ", x)?;
+        }
+        writeln!(output, "{}", f[fl - 1])?;
+    }
+
+
     Ok(())
 }

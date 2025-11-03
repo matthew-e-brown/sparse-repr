@@ -8,12 +8,13 @@ use indoc::writedoc;
 /// Command line arguments.
 #[derive(Debug)]
 pub struct Args {
-    pub src: Input,
-    pub dst: Output,
+    pub input: Input,
+    pub output: Output,
     pub fmt: Format,
     pub undirected: bool,
     pub multiple: bool,
     pub no_preserve_indices: bool,
+    pub no_empty: bool,
     pub print_mapping: bool,
 }
 
@@ -41,6 +42,7 @@ impl Args {
         let mut undirected = None;
         let mut multiple = None;
         let mut no_preserve_indices = None;
+        let mut no_empty = None;
         let mut print_mapping = None;
 
         let mut args = std::env::args().skip(1).peekable();
@@ -69,14 +71,14 @@ impl Args {
             let mut is_positional = true; // Is the argument we're about to process positional?
             let mut val_from_peek = true; // Did we get its value from args.peek()? i.e., do we need to advance args?
 
-            if raw_arg.starts_with("--") {
+            if raw_arg.starts_with("--") && raw_arg != "--" {
                 is_positional = false;
                 if let Some(i) = raw_arg.find("=") {
                     arg = &raw_arg[..i];
                     val = Some(&raw_arg[i + 1..]); // skip past '='
                     val_from_peek = false;
                 }
-            } else if raw_arg.starts_with("-") {
+            } else if raw_arg.starts_with("-") && raw_arg != "-" {
                 is_positional = false;
                 // Is the option more than "-X"? The value is attached to the option.
                 if raw_arg.len() > 2 && raw_arg.is_char_boundary(2) {
@@ -129,6 +131,7 @@ impl Args {
                     "-u" | "--undirected" => set_option!(arg.to_string(), undirected),
                     "-m" | "--multiple" => set_option!(arg.to_string(), multiple),
                     "-I" | "--no-preserve-indices" => set_option!(arg.to_string(), no_preserve_indices),
+                    "-Z" | "--no-empty" => set_option!(arg.to_string(), no_empty),
                     "-p" | "--print-mapping" => set_option!(arg.to_string(), print_mapping),
                     other => return Err(ArgError::UnknownOpt(other.to_string())),
                 }
@@ -137,12 +140,8 @@ impl Args {
 
         let force = force.unwrap_or(false);
         let fmt = fmt.unwrap_or(Format::Text);
-        let undirected = undirected.unwrap_or(false);
-        let multiple = multiple.unwrap_or(false);
-        let no_preserve_indices = no_preserve_indices.unwrap_or(false);
-        let print_mapping = print_mapping.unwrap_or(false);
 
-        let src: Input = {
+        let input: Input = {
             let stdin = io::stdin();
             match pos1.as_deref() {
                 None | Some("-") => stdin.lock().into(),
@@ -163,7 +162,10 @@ impl Args {
             }
         };
 
-        let dst: Output = match output.as_deref() {
+        let output: Output = match output.as_deref() {
+            None if fmt == Format::Binary && io::stdout().is_terminal() => {
+                return Err(ArgError::ImplicitBinaryToStdout);
+            },
             None | Some("-") => io::stdout().lock().into(),
             Some(path) => File::options()
                 .read(false)
@@ -177,13 +179,14 @@ impl Args {
         };
 
         Ok(Args {
-            src,
-            dst,
+            input,
+            output,
             fmt,
-            undirected,
-            multiple,
-            no_preserve_indices,
-            print_mapping,
+            undirected: undirected.unwrap_or(false),
+            multiple: multiple.unwrap_or(false),
+            no_preserve_indices: no_preserve_indices.unwrap_or(false),
+            no_empty: no_empty.unwrap_or(false),
+            print_mapping: print_mapping.unwrap_or(false),
         })
     }
 }
@@ -192,20 +195,30 @@ impl Args {
 pub enum ArgError {
     /// The '-h' flag was passed; help should be displayed.
     DisplayHelpShort,
+
     /// The '--help' flag was passed; help should be displayed.
     DisplayHelpLong,
+
     /// An option with an unknown flag was found.
     UnknownOpt(String),
+
     /// More options than were expected appeared on the command line.
     UnexpectedArg(String),
+
     /// An option was specified more times than expected.
     DuplicateOpt(String), // String to be able to output exactly what they typed
+
     /// A required argument to either the program or an option was missing.
     MissingArg(&'static str),
+
     /// An argument to either the program or an option is in the wrong format.
     InvalidArg(&'static str, String),
+
     /// Failed to open a file for input or output.
     IOError(&'static str, io::Error),
+
+    /// Binary format selected, but <output> was set to stdout automatically (don't want to mess up their terminal).
+    ImplicitBinaryToStdout,
 }
 
 impl Display for ArgError {
@@ -220,6 +233,11 @@ impl Display for ArgError {
             // Actual displaying of help messages is handled in `main`, this variant is not normally displayed.
             ArgError::DisplayHelpShort => f.write_str("Encountered -h in arguments."),
             ArgError::DisplayHelpLong => f.write_str("Encountered --help in arguments."),
+            ArgError::ImplicitBinaryToStdout => f.write_str(
+                "Detected terminal <output> with binary format selected. \
+                Are you sure you want to write raw bytes to the terminal? \
+                Set <output> to '-' to write to stdout explicitly.",
+            ),
         }
     }
 }
@@ -341,6 +359,7 @@ pub fn write_help_short<W: Write>(mut w: W) -> std::io::Result<()> {
                 -m, --multiple             Allows for the presence of multiple edges between the same two vertices.
                 -I, --no-preserve-indices  Re-number output vertices' indices based solely on the order in which they
                                            appear in <input>.
+                -Z, --no-empty             Exclude the initial empty entry from the CSR format.
                 -p, --print-mapping        Print a mapping of how vertex labels were re-numbered to stderr.
         "#,
         name = env!("CARGO_PKG_NAME"),
@@ -362,6 +381,7 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
             The CSR format used is specifically as described in:
             [1] T. Kelly, "Programming Workbench: Compressed Sparse Row Format for Representing Graphics," ;login:,
                 vol. 45, no. 4, pp. 76-82, 2020.
+                https://www.usenix.org/system/files/login/articles/login_winter20_16_kelly.pdf
 
             USAGE:
                 {name} <input> [-f <fmt>]
@@ -416,33 +436,48 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
                                            appear in <input>.
 
                                            By default, when all labels in <input> are numeric, their exact values are
-                                           attempted to be preserved (see INPUT FORMAT for details). When this flag is
+                                           attempted to be preserved (see OUTPUT FORMATS for details). When this flag is
                                            set, all attempts to preserve numeric labels' values are disabled.
+
+                -Z, --no-empty             Exclude the initial empty entry from the CSR format.
+
+                                           According to the paper (see [1] above), the N array in the output should (by
+                                           default) start with an "empty" entry, and the first vertex is indexed as 1
+                                           (so F[N[1]] to F[N[2]] gives its out-bound adjacency list). This is done to
+                                           allow for deleting edges: since the adjacency lists in F reference vertices
+                                           by pointing back into N, and no vertices will have index 0, setting an entry
+                                           in F to 0 can be interpreted as an edge deletion.
+
+                                           This flag disables this behaviour: with it enabled, the first vertex will be
+                                           stored at N[0].
 
                 -p, --print-mapping        Print a mapping of how vertex labels were re-numbered to stderr.
 
             INPUT FORMAT:
-                The input file should contain multiple lines representing an edge-list of a graph. Each line
-                represents a single edge (directed by default; see -u/--undirected in OPTIONS). Each line/edge should
-                be a pair of whitespace- or comma-separated labels.
+              The input file should contain multiple lines representing an edge-list of a graph. Each line represents a
+              single edge (directed by default; see -u/--undirected in OPTIONS). Each line/edge should contain one or
+              two vertex labels, separated by whitespace or commas. A line with only one vertex label is treated as a
+              disconnected vertex: this will create a vertex with degree zero in the output (unless said label has
+              already appeared attached to an edge, then it will do nothing).
 
-                Vertex labels may be any sequence of UTF-8-encoded text, excluding commas or whitespace (since those
-                are used to separate labels on a line).
+              Vertex labels may be any sequence of UTF-8-encoded text, excluding commas or whitespace (since those are
+              used to separate labels on a line).
 
-                When all vertex labels in <input> are integers, their values will be attempted to be preserved in the
-                final output (by default, see -I/--no-preserve--indices). For example, edge 18→209 appearing on the
-                first line of <input> will be result in F[N[18]] = 209. However, this is only possible if there are no
-                missing indices in the file: if there are, gaps in the sequence will be filled in based on the numeric
-                ordering of the non-missing indices.
+            OUTPUT ORDERING:
+              Unless `-I/--no-preserve-indices` is set, vertex labels are sorted in ascending order. Any non-integer
+              labels are sorted alphabetically (sort of: they are sorted by code-point) after integers. A consequence of
+              this is that, if all vertices in the input are integers starting from 1, and there are no gaps in their
+              sequence, their values will be exactly preserved in the final output. NOTE: see the `-Z/--no-empty` flag
+              if your vertex labels start at 0 instead of 1.
 
             OUTPUT FORMATS:
-                This section documents file structure of the output formats.
+              This section documents file structure of the output formats.
 
-                TEXT FORMAT:
-                    TODO
+              TEXT FORMAT:
+                TODO
 
-                BINARY FORMAT:
-                    TODO
+              BINARY FORMAT:
+                TODO
         "#,
         name = env!("CARGO_PKG_NAME"),
         ver = env!("CARGO_PKG_VERSION"),

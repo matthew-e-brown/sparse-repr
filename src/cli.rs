@@ -473,15 +473,15 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
 
                 -d, --delimiter=<delim>    String used to separate vertex labels in <input> [default: whitespace].
 
-                                           Note that this disables splitting on whitespace (to allow for . If the given delimiter is
-                                           not found on any
+                                           Note that this disables splitting on whitespace: only the provided <delim>
+                                           will be used to split lines.
 
                 -F, --force                Overwrite <output> if it already exists.
 
                 -f, --format=<fmt>         Which to write output as [default: text].
 
                                            <fmt> is either 'text'/'txt'/'t' or 'binary'/'bin'/'b'. See OUTPUT FORMATS
-                                           for details on what exactly is output.
+                                           for details on what exactly gets written.
 
                 -b, --bits=<width>         Specify the size of integer used in binary output, in bits [default: {width}].
 
@@ -559,10 +559,64 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
               This section documents file structure of the output formats.
 
               TEXT FORMAT:
-                TODO
+                The first line of <output> will contain the lengths of N and F, separated by a space. Lines two and
+                three will contain the values of N and F respectively, also space-separated.
 
               BINARY FORMAT:
-                TODO
+                The binary format starts with a small four-byte header of encoding information:
+
+                - Byte #0:         Either 16 (0x10), 32 (0x20), or 64 (0x40). Gives the size, in bits, of `usize`
+                                   (`size_t`) that the file was written with. This size is used to encode the lengths of
+                                   N and F. This will always be {width} for files written by this particular executable.
+                - Byte #1:         Either 8 (0x08), 16 (0x10), 32 (0x20), or 64 (0x40). Gives the size, in bits, of the
+                                   unsigned integer-type used to encode the values of N and F.
+                - Bytes #2 and 3:  Endian marker for the entire rest of the file. Will be 0xBB 0xAA for little-endian
+                                   and 0xAA 0xBB for big-endian.
+
+                Following bytes 0-3, the lengths of N and F are given back-to-back, in the bit-width described by byte
+                #0. The N and F arrays, encoded with bit-width given in byte #1, follow immediately.
+
+              EXAMPLES:
+                Given the following input:
+
+                  2 1
+                  2 6
+                  2 8
+                  3 1
+                  3 6
+                  3 7
+                  7 2
+                  7 4
+                  8 4
+                  5
+                  9
+
+                Text output looks like this:
+                  10 9
+                  0 0 0 3 6 6 6 6 8 9
+                  1 6 8 1 6 7 2 4 4
+
+                An example of binary output using '--bits 8':
+                  +--------+-------------------------+
+                  |00000000| 40 08 bb aa 0a 00 00 00 |
+                  |00000008| 00 00 00 00 09 00 00 00 |
+                  |00000010| 00 00 00 00 00 00 00 03 |
+                  |00000018| 06 06 06 06 08 09 01 06 |
+                  |00000020| 08 01 06 07 02 04 04    |
+                  +--------+-------------------------+
+
+                Examples using '--bits 16' with:
+                  '--endianness big':                       '--endianness little':
+                  +--------+-------------------------+      +--------+-------------------------+
+                  |00000000| 40 10 aa bb 00 00 00 00 |      |00000000| 40 10 bb aa 0a 00 00 00 |
+                  |00000008| 00 00 00 0a 00 00 00 00 |      |00000008| 00 00 00 00 09 00 00 00 |
+                  |00000010| 00 00 00 09 00 00 00 00 |      |00000010| 00 00 00 00 00 00 00 00 |
+                  |00000018| 00 00 00 03 00 06 00 06 |      |00000018| 00 00 03 00 06 00 06 00 |
+                  |00000020| 00 06 00 06 00 08 00 09 |      |00000020| 06 00 06 00 08 00 09 00 |
+                  |00000028| 00 01 00 06 00 08 00 01 |      |00000028| 01 00 06 00 08 00 01 00 |
+                  |00000030| 00 06 00 07 00 02 00 04 |      |00000030| 06 00 07 00 02 00 04 00 |
+                  |00000038| 00 04                   |      |00000038| 04 00                   |
+                  +--------+-------------------------+      +--------+-------------------------+
         "#,
         endian = target::ENDIANNESS,
         width = target::BIT_WIDTH,

@@ -133,17 +133,20 @@ impl<'a> Graph<'a> {
         self.map.par_iter_mut().for_each(|(_vertex, edges)| edges.sort_unstable_keys());
     }
 
-    pub fn generate_csr<U: Unsigned + PrimInt + Sync>(&self) -> Result<(Box<[U]>, Box<[U]>), OverflowError> {
+    pub fn generate_csr<U: Unsigned + PrimInt + Copy + Sync>(&self) -> Result<(Box<[U]>, Box<[U]>), OverflowError> {
         let has_zero = self.include_zero;
 
+        // (N and F are the variable names used in the source paper)
+        let n_len = self.num_verts() + (has_zero as usize);
+        let f_len = self.num_edges();
+
         // Used for error reporting:
-        let max_index = usize::max(self.num_verts(), self.num_edges());
+        let max_index = usize::max(n_len, f_len);
         let uint_size = U::zero().count_zeros();
         let overflow = OverflowError(max_index, uint_size);
 
-        // (N and F are the variable names used in the source paper)
-        let mut n = Vec::<U>::with_capacity(self.num_verts() + (has_zero as usize));
-        let mut f = Vec::<U>::with_capacity(self.num_edges());
+        let mut n = Vec::<U>::with_capacity(n_len);
+        let mut f = Vec::<U>::with_capacity(f_len);
 
         if has_zero {
             n.push(U::zero());
@@ -157,8 +160,9 @@ impl<'a> Graph<'a> {
             i += v_outs.values().sum::<usize>(); // Add the total edge-count for this vertex to `i`
         }
 
-        // Ensure we've been counting correctly: after the last vertex's
-        assert_eq!(i, self.num_edges(), "final index in N should match total edge-count");
+        // Ensure we've been counting correctly: after the last vertex's edges have been accounted for, `i` should be
+        // the same as F's length.
+        assert_eq!(i, f_len, "final index in N should match total edge-count in F");
 
         // The second part we can do in parallel: every index in F is one vertex; but it needs to be the *index* of the
         // vertex in N. That means we need to do a lookup for every vertex to find its index (we can't track their
@@ -174,15 +178,15 @@ impl<'a> Graph<'a> {
             .try_for_each(|i| -> Result<(), OverflowError> {
                 // Find the region of F we want to index:
                 let ni = i + (has_zero as usize);
-                let f1 = n[ni].to_usize().unwrap();
+                let f1 = n[ni].to_usize().unwrap(); // Value came from a usize, should go back without error
                 let f2 = match n.get(ni + 1) {
                     Some(&x) => x.to_usize().unwrap(),
-                    None => self.num_edges(),
+                    None => f_len,
                 };
 
                 // Double check our assumptions and create a slice:
-                debug_assert!(f1 <= self.num_edges(), "indices in N should fit within F");
-                debug_assert!(f2 <= self.num_edges(), "indices in N should fit within F");
+                debug_assert!(f1 <= f_len, "indices in N should fit within F");
+                debug_assert!(f2 <= f_len, "indices in N should fit within F");
 
                 // SAFETY:
                 // - The length of F is the degree-sum of the graph, and N is a cumulative sum of vertex degrees up to
@@ -193,6 +197,8 @@ impl<'a> Graph<'a> {
                 //   at `f2`. Since N is monotonically increasing, either `f1 == f2` or `f1 < f2`. If `f1 < f2`, there
                 //   is no overlap; if `f1 == f2`, then there is "overlap", but this region has size zero, and so no
                 //   writes will be performed, and no reference/slice aliasing will occur.
+                // - Finally, it is safe to initialize F in pieces like this because `U` has a bound of `Copy` on it,
+                //   which means that `U` will never have a `Drop` implementation we need to worry about calling.
                 let f_ptr = f.as_ptr().cast_mut();
                 let slice = unsafe { std::slice::from_raw_parts_mut(f_ptr.add(f1), f2 - f1) };
 
@@ -213,7 +219,7 @@ impl<'a> Graph<'a> {
         // SAFETY: After the `par_iter` returns, each iteration will have written a total number of edges into F equal
         // to the sum of each vertex's out-degree. This is is the same length that was used to initialize F's capacity.
         unsafe {
-            f.set_len(self.num_edges());
+            f.set_len(f_len);
         }
 
         Ok((n.into_boxed_slice(), f.into_boxed_slice()))

@@ -2,7 +2,6 @@ mod cli;
 mod graph;
 
 use std::error::Error;
-use std::fmt::Display;
 use std::io::{self, Read, Write};
 use std::process::ExitCode;
 
@@ -107,15 +106,14 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    match (args.bits, args.fmt) {
-        (BitWidth::u8, Format::Text) => write_text::<u8>(&graph, args.output)?,
-        (BitWidth::u16, Format::Text) => write_text::<u16>(&graph, args.output)?,
-        (BitWidth::u32, Format::Text) => write_text::<u32>(&graph, args.output)?,
-        (BitWidth::u64, Format::Text) => write_text::<u64>(&graph, args.output)?,
-        (BitWidth::u8, Format::Binary) => write_binary::<u8>(&graph, args.output, args.endian)?,
-        (BitWidth::u16, Format::Binary) => write_binary::<u16>(&graph, args.output, args.endian)?,
-        (BitWidth::u32, Format::Binary) => write_binary::<u32>(&graph, args.output, args.endian)?,
-        (BitWidth::u64, Format::Binary) => write_binary::<u64>(&graph, args.output, args.endian)?,
+    match args.fmt {
+        Format::Text => write_text(&graph, args.output)?,
+        Format::Binary => match args.bits {
+            BitWidth::u8 => write_binary::<u8>(&graph, args.output, args.endian)?,
+            BitWidth::u16 => write_binary::<u16>(&graph, args.output, args.endian)?,
+            BitWidth::u32 => write_binary::<u32>(&graph, args.output, args.endian)?,
+            BitWidth::u64 => write_binary::<u64>(&graph, args.output, args.endian)?,
+        },
     }
 
     Ok(())
@@ -126,11 +124,23 @@ fn write_binary<U: Unsigned + PrimInt + Sync + ToBytes>(
     mut output: impl Write,
     endian: Endianness,
 ) -> Result<(), Box<dyn Error>> {
-    type ToBytesFn<U> = fn(&U) -> <U as ToBytes>::Bytes;
-
     let (n, f) = graph.generate_csr::<U>()?;
 
-    let (n_len, f_len, to_bytes): ([u8; _], [u8; _], ToBytesFn<U>) = match endian {
+    // Write header:
+    let u_bits = u8::try_from(usize::BITS).expect("usize::BITS should be <256");
+    let x_bits = u8::try_from(U::zero().count_zeros()).expect("U::BITS should be <256");
+    let marker = match endian {
+        Endianness::Little => [0xBB, 0xAA],
+        Endianness::Big => [0xAA, 0xBB],
+    };
+
+    output.write_all(&[u_bits])?;
+    output.write_all(&[x_bits])?;
+    output.write_all(&marker[..])?;
+
+    // Now encode the lengths of N and F into the correct endianness.
+    // Also determine which method to use to convert U to the right endianness.
+    let (n_len, f_len, to_bytes): ([u8; _], [u8; _], fn(&U) -> U::Bytes) = match endian {
         Endianness::Little => (n.len().to_le_bytes(), f.len().to_le_bytes(), U::to_le_bytes),
         Endianness::Big => (n.len().to_be_bytes(), f.len().to_be_bytes(), U::to_be_bytes),
     };
@@ -149,11 +159,8 @@ fn write_binary<U: Unsigned + PrimInt + Sync + ToBytes>(
     Ok(())
 }
 
-fn write_text<U: Unsigned + PrimInt + Sync + Display>(
-    graph: &Graph,
-    mut output: impl Write,
-) -> Result<(), Box<dyn Error>> {
-    let (n, f) = graph.generate_csr::<U>()?;
+fn write_text(graph: &Graph, mut output: impl Write) -> Result<(), Box<dyn Error>> {
+    let (n, f) = graph.generate_csr::<usize>()?;
 
     let nl = n.len();
     let fl = f.len();

@@ -62,17 +62,27 @@ fn run() -> Result<(), Box<dyn Error>> {
         .include_zero(!args.no_empty)
         .build();
 
+    // There's not yet any way to create a `&dyn Pattern`, since `Pattern` is still unstable... so we'll have to make
+    // the entire splitting routine dynamic.
+    let splitter: &dyn Fn(&str) -> (Vertex, Option<Vertex>) = match args.delimiter {
+        Some(delim) => &move |line| {
+            let mut iter = line.split(&delim[..]).map(Vertex::from_str);
+            (iter.next().unwrap(), iter.next())
+        },
+        None => &|line| {
+            let mut iter = line.split(char::is_whitespace).map(Vertex::from_str);
+            (iter.next().unwrap(), iter.next())
+        },
+    };
+
     for line in input.lines() {
         if line.trim().len() == 0 {
             continue;
         }
 
-        let mut bits = line.split(|c: char| c == ',' || c.is_whitespace());
-
-        let v1 = Vertex::from_str(bits.next().unwrap()); // Already checked for empty line, so we can unwrap
-        match bits.next() {
-            Some(v2) => graph.add_edge(v1, Vertex::from_str(v2)),
-            None => graph.add_vertex(v1),
+        match splitter(line) {
+            (v1, Some(v2)) => graph.add_edge(v1, v2),
+            (v1, None) => graph.add_vertex(v1),
         }
     }
 

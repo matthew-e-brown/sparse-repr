@@ -249,7 +249,7 @@ impl<'a> Vertex<'a> {
     pub fn from_str(s: &'a str) -> Self {
         match s.parse() {
             Ok(n) => Vertex(VertexType::Number(n)),
-            Err(_) => Vertex(VertexType::Label(s)),
+            Err(_) => Vertex(VertexType::Label(s.trim())),
         }
     }
 }

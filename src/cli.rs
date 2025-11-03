@@ -11,6 +11,7 @@ pub struct Args {
     pub input: Input,
     pub output: Output,
     pub fmt: Format,
+    pub delimiter: Option<String>,
     pub undirected: bool,
     pub multiple: bool,
     pub no_preserve_indices: bool,
@@ -39,6 +40,7 @@ impl Args {
         let mut output = None;
         let mut force = None;
         let mut fmt = None;
+        let mut delimiter = None;
         let mut undirected = None;
         let mut multiple = None;
         let mut no_preserve_indices = None;
@@ -128,6 +130,10 @@ impl Args {
                         Some(other) => return Err(ArgError::InvalidArg("<fmt>", other.to_string())),
                         None => return Err(ArgError::MissingArg("<fmt>")),
                     },
+                    "-d" | "--delimiter" => match val {
+                        Some(value) => set_option!(arg.to_string(), delimiter, [take] value.to_string()),
+                        None => return Err(ArgError::MissingArg("<delim>")),
+                    },
                     "-u" | "--undirected" => set_option!(arg.to_string(), undirected),
                     "-m" | "--multiple" => set_option!(arg.to_string(), multiple),
                     "-I" | "--no-preserve-indices" => set_option!(arg.to_string(), no_preserve_indices),
@@ -182,6 +188,7 @@ impl Args {
             input,
             output,
             fmt,
+            delimiter,
             undirected: undirected.unwrap_or(false),
             multiple: multiple.unwrap_or(false),
             no_preserve_indices: no_preserve_indices.unwrap_or(false),
@@ -353,6 +360,7 @@ pub fn write_help_short<W: Write>(mut w: W) -> std::io::Result<()> {
                 -h                         Display this message and exit.
                 --help                     Display a longer-form help message and exit.
                 -o, --output=<output>      Filepath to write output to [default: stdout].
+                -d, --delimiter=<delim>    String used to separate vertex labels in <input> [default: whitespace].
                 -F, --force                Overwrite <output> if it already exists.
                 -f, --format=<fmt>         Which to write output as [default: text].
                 -u, --undirected           Treats <input> as containing undirected edges rather than directed edges.
@@ -408,6 +416,11 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
 
                                            See the OUTPUT FORMAT section for details about what the output will be.
 
+                -d, --delimiter=<delim>    String used to separate vertex labels in <input> [default: whitespace].
+
+                                           Note that this disables splitting on whitespace (to allow for . If the given delimiter is
+                                           not found on any
+
                 -F, --force                Overwrite <output> if it already exists.
 
                 -f, --format=<fmt>         Which to write output as [default: text].
@@ -454,21 +467,22 @@ pub fn write_help_long<W: Write>(mut w: W) -> std::io::Result<()> {
                 -p, --print-mapping        Print a mapping of how vertex labels were re-numbered to stderr.
 
             INPUT FORMAT:
-              The input file should contain multiple lines representing an edge-list of a graph. Each line represents a
-              single edge (directed by default; see -u/--undirected in OPTIONS). Each line/edge should contain one or
-              two vertex labels, separated by whitespace or commas. A line with only one vertex label is treated as a
-              disconnected vertex: this will create a vertex with degree zero in the output (unless said label has
-              already appeared attached to an edge, then it will do nothing).
+              <input> should consist of a series of lines describing the format of a graph. Each line is comprised of
+              one or two vertex "labels". Any string of UTF-8-encoded text is a valid vertex label. Vertex labels are
+              separated by whitespace by default, which means they cannot contain whitespace. -d/--delimiter can be used
+              to set an explicit delimiter and allow for whitespace in labels.
 
-              Vertex labels may be any sequence of UTF-8-encoded text, excluding commas or whitespace (since those are
-              used to separate labels on a line).
+              Lines with two vertex labels represent an edge (directed by default; see -u/--undirected in OPTIONS).
+              Lines with one vertex label represent a disconnected vertex, and will result in a vertex with degree zero
+              appearing in the output (unless their label has already been accounted for by another edge, in which case
+              they will do nothing).
 
             OUTPUT ORDERING:
-              Unless `-I/--no-preserve-indices` is set, vertex labels are sorted in ascending order. Any non-integer
+              Unless -I/--no-preserve-indices is set, vertex labels are sorted in ascending order. Any non-integer
               labels are sorted alphabetically (sort of: they are sorted by code-point) after integers. A consequence of
               this is that, if all vertices in the input are integers starting from 1, and there are no gaps in their
-              sequence, their values will be exactly preserved in the final output. NOTE: see the `-Z/--no-empty` flag
-              if your vertex labels start at 0 instead of 1.
+              sequence, their values will be exactly preserved in the final output. NOTE: see the -Z/--no-empty flag if
+              your vertex labels start at 0 instead of 1.
 
             OUTPUT FORMATS:
               This section documents file structure of the output formats.

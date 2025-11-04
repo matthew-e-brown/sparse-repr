@@ -151,7 +151,6 @@ impl Args {
                         Some(other) => return Err(ArgError::InvalidArg("<width>", other.to_string())),
                         None => return Err(ArgError::MissingArg("<width>")),
                     },
-                    // -E, --endian=<endianness>  Specify the indianness to use for binary output [default: {endian}].
                     "-E" | "--endian" => match val {
                         Some("big" | "b" | "B") => set_option!(arg.to_string(), endian, [take] Endianness::Big),
                         Some("little" | "l" | "L") => set_option!(arg.to_string(), endian, [take] Endianness::Little),

@@ -156,6 +156,7 @@ fn write_binary<U: Unsigned + PrimInt + Sync + ToBytes>(
         output.write_all(to_bytes(&x).as_ref())?;
     }
 
+    output.flush()?;
     Ok(())
 }
 
@@ -181,6 +182,6 @@ fn write_text(graph: &Graph, mut output: impl Write) -> Result<(), Box<dyn Error
         writeln!(output, "{}", f[fl - 1])?;
     }
 
-
+    output.flush()?;
     Ok(())
 }

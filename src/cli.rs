@@ -60,22 +60,24 @@ impl Args {
         let mut no_empty = None;
         let mut print_mapping = None;
 
-        let mut args = std::env::args().skip(1).peekable();
+        // Start by reading all arguments into a vector. We need to scan through twice anyways (once to look for
+        // '-h/--help' and once to actually parse), so no point trying to avoid allocating.
+        let args = std::env::args().skip(1).collect::<Vec<String>>();
+        for arg in &args {
+            match &arg[..] {
+                "-h" => return Err(ArgError::DisplayHelpShort),
+                "--help" => return Err(ArgError::DisplayHelpLong),
+                _ => {},
+            }
+        }
+
+        let mut args = args.into_iter().peekable();
         let mut consumed = false; // Did the previous option consume this one as its argument?
         while let Some(raw_arg) = args.next() {
             // By default, `arg` is the whole argument, and `val` is the next argument (though `val` may be ignored
             // depending on what `arg` is, hence the peekable).
             let mut arg = raw_arg.as_str();
             let mut val = args.peek().map(String::as_str);
-
-            // Check for -h/--help before we do *anything* else. If we check for this down in our `match arg` statement,
-            // then it is subject to being consumed by previous flags. i.e., `<exe> <input> -f --help` should display
-            // the help message instead of erroring on "'--help' is not a valid format".
-            if arg == "-h" || val == Some("-h") {
-                return Err(ArgError::DisplayHelpShort);
-            } else if arg == "--help" || val == Some("--help") {
-                return Err(ArgError::DisplayHelpLong);
-            }
 
             // If this argument has already been consumed by the previous option, skip it.
             if consumed {
